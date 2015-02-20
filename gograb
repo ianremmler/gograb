@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+
+set -o pipefail
+
+usage() {
+	printf "Usage: gograb [-d] <proxy> [<target>]\n" >&2
+	printf "\tgrab <target> (or its dependencies if -d given) via <proxy>\n" >&2
+	exit 1
+}
+
+err() {
+	printf "Error: %s\n" "$@" >&2
+}
+
+die() {
+	err "$@"
+	exit 1
+}
+
+[[ $GOPATH ]]         || die "GOPATH environment variable not set"
+type -P go >/dev/null || die "go tool not found"
+
+ver=$(go tool dist version) && [[ $ver  ]] || die "unable to determine go version"
+os=$(go env GOOS)           && [[ $os   ]] || die "unable to determine GOOS"
+arch=$(go env GOARCH)       && [[ $arch ]] || die "unable to determine GOARCH"
+
+printf -v go_dist "https://storage.googleapis.com/golang/%q.%q-%q.tar.gz" \
+	"$ver" "$os" "$arch"
+
+while getopts dh flag; do
+	case "$flag" in
+	d) get_deps=1;;
+	*) usage;;
+	esac
+done
+shift $(( OPTIND - 1 ))
+
+if (( $# < 1 )); then
+	err "proxy host is required"
+	usage
+fi
+
+proxy="$1"
+shift
+
+targs=("$@")
+if [[ $get_deps ]]; then
+	# find dependencies that are not in the standard library
+	if ! readarray -t targs < <(go list -f '{{join .Imports "\n"}}' "$@" \
+		| xargs go list -f "{{if not .Standard}}{{.ImportPath}}{{end}}")
+	then
+		die "unable to determine dependencies"
+	fi
+fi
+
+# make sure we have something that at least looks like it could be go gettable
+if [[ ! ${targs[@]} =~ [[:alnum:]]+\.[[:alnum:]]+/[[:alnum:]]+ ]]; then
+	err "it doesn't look like there is anything to go get"
+	usage
+fi
+
+# script to run on proxy
+read -r -d "" proxy_script <<-'EOF'
+	set -e -o pipefail
+
+	go_dist="%s"
+	targs=(%s)
+
+	work_dir="$(mktemp -d)"
+
+	cleanup() {
+		printf "\\nCleaning up %%s\\n" "$work_dir" >&2
+		rm -R $work_dir
+	}
+
+	trap cleanup EXIT
+
+	export GOROOT="$work_dir"/go
+	export GOPATH="$work_dir"/gopath
+	export PATH="$GOROOT"/bin:"$PATH"
+
+	printf "Working in %%s\\n" "$work_dir" >&2
+	mkdir -p "$GOPATH/src"
+	cd "$work_dir"
+
+	printf "\\nFetching Go distribution: %%s\\n\\n" "$go_dist" >&2
+	curl "$go_dist" | tar -zxf -
+
+	printf "\\nFetching targets\\n\\n" >&2
+	go get -d -v "${targs[@]}" >&2
+
+	printf "\\nRelaying target sources\\n" >&2
+	tar -C "$GOPATH" -cf - src
+EOF
+
+printf "Using %s as proxy\n\n" "$proxy" >&2
+printf -v targ_list '"%q" ' "${targs[@]}"
+if ! ssh "$proxy" bash < <(printf "$proxy_script" "$go_dist" "$targ_list") \
+	| tar -C "$GOPATH" -xf -
+then
+	die "unable to fetch targets"
+fi
+
+printf "\nInstalling\n\n" >&2
+go install -v "$@" >&2
