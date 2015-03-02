@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -o pipefail
+set -e -o pipefail
 
 usage() {
 	printf "Usage: gograb [-d] <proxy> [<target>]\n" >&2
@@ -60,7 +60,7 @@ if [[ ! ${targs[@]} =~ [[:alnum:]]+\.[[:alnum:]]+/[[:alnum:]]+ ]]; then
 fi
 
 # script to run on proxy
-read -r -d "" proxy_script <<-'EOF'
+read -r -d "" proxy_script <<-'EOF' || true
 	set -e -o pipefail
 
 	go_dist="%s"
@@ -87,7 +87,7 @@ read -r -d "" proxy_script <<-'EOF'
 	curl "$go_dist" | tar -zxf -
 
 	printf "\\nFetching targets\\n\\n" >&2
-	go get -d -v "${targs[@]}" >&2
+	go get -d -v "${targs[@]}" >&2 || true
 
 	printf "\\nRelaying target sources\\n" >&2
 	tar -C "$GOPATH" -cf - src
