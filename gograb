@@ -47,7 +47,7 @@ targs=("$@")
 if [[ $get_deps ]]; then
 	# find dependencies that are not in the standard library
 	if ! readarray -t targs < <(go list -f '{{join .Imports "\n"}}' "$@" \
-		| xargs go list -f "{{if not .Standard}}{{.ImportPath}}{{end}}")
+		| xargs go list -e -f "{{if not .Standard}}{{.ImportPath}}{{end}}")
 	then
 		die "unable to determine dependencies"
 	fi
